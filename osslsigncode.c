@@ -1047,6 +1047,7 @@ static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
 {
 	guint8 classid[16];
 	gchar decoded[0x40];
+	GSList *sorted = NULL;
 	gint i;
 
 	gsf_infile_msole_get_class_id(GSF_INFILE_MSOLE(infile), classid);
@@ -1054,7 +1055,6 @@ static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
 
 	for (i = 0; i < gsf_infile_num_children(infile); i++) {
 		GsfInput *child = gsf_infile_child_by_index(infile, i);
-
 		const guint8 *name = (const guint8*)gsf_input_name(child);
 		msi_decode(name, decoded);
 
@@ -1062,11 +1062,20 @@ static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
 			continue;
 		if (!g_strcmp0(decoded, "\05MsiDigitalSignatureEx"))
 			continue;
+ 
+		sorted = g_slist_insert_sorted(sorted, (gpointer)name, (GCompareFunc)msi_cmp);
+	}
+
+	for (; sorted; sorted = sorted->next) {
+		gchar *name = (gchar*)sorted->data;
+		GsfInput *child =  gsf_infile_child_by_name(infile, name);
+		if (child == NULL)
+			continue;
 
 		gboolean is_dir = GSF_IS_INFILE(child) && gsf_infile_num_children(GSF_INFILE(child)) > 0;
 		GsfOutput *outchild = gsf_outfile_new_child(outole, name, is_dir);
 		if (is_dir) {
-			if (!msi_handle_dir(GSF_INFILE(child), GSF_OUTFILE(outchild), NULL)) {
+			if (!msi_handle_dir(GSF_INFILE(child), GSF_OUTFILE(outchild), hash)) {
 				return FALSE;
 			}
 		} else {
@@ -1085,6 +1094,8 @@ static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
 	}
 
 	BIO_write(hash, classid, sizeof(classid));
+
+	g_slist_free(sorted);
 
 	return TRUE;
 }
@@ -1718,9 +1729,6 @@ int main(int argc, char **argv)
 #ifdef WITH_GSF
 		GsfInput *src;
 		GsfInfile *ole;
-		GSList *sorted = NULL;
-		guint8 classid[16];
-		gchar decoded[0x40];
 
 		BIO_push(hash, BIO_new(BIO_s_null()));
 
@@ -1733,15 +1741,10 @@ int main(int argc, char **argv)
 			DO_EXIT_1("Error opening output file %s", outfile);
 
 		ole = gsf_infile_msole_new(src, NULL);
-		gsf_infile_msole_get_class_id(GSF_INFILE_MSOLE(ole), classid);
-
 		outole = gsf_outfile_msole_new(sink);
-
 		if (!msi_handle_dir(ole, outole, hash)) {
 			DO_EXIT_0("unable to msi_handle_dir()\n");
 		}
-
-		g_slist_free(sorted);
 #else
 		DO_EXIT_1("libgsf is not available, msi support is disabled: %s\n", infile);
 #endif
