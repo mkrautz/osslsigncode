@@ -1042,6 +1042,52 @@ static gint msi_cmp(gpointer a, gpointer b)
 
 	return diff;
 }
+
+static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
+{
+	guint8 classid[16];
+	gchar decoded[0x40];
+	gint i;
+
+	gsf_infile_msole_get_class_id(GSF_INFILE_MSOLE(infile), classid);
+	gsf_outfile_msole_set_class_id(GSF_OUTFILE_MSOLE(outole), classid);
+
+	for (i = 0; i < gsf_infile_num_children(infile); i++) {
+		GsfInput *child = gsf_infile_child_by_index(infile, i);
+
+		const guint8 *name = (const guint8*)gsf_input_name(child);
+		msi_decode(name, decoded);
+
+		if (!g_strcmp0(decoded, "\05DigitalSignature"))
+			continue;
+		if (!g_strcmp0(decoded, "\05MsiDigitalSignatureEx"))
+			continue;
+
+		gboolean is_dir = GSF_IS_INFILE(child) && gsf_infile_num_children(GSF_INFILE(child)) > 0;
+		GsfOutput *outchild = gsf_outfile_new_child(outole, name, is_dir);
+		if (is_dir) {
+			if (!msi_handle_dir(GSF_INFILE(child), GSF_OUTFILE(outchild), NULL)) {
+				return FALSE;
+			}
+		} else {
+			while (gsf_input_remaining(child) > 0) {
+				gsf_off_t size = MIN(gsf_input_remaining(child), 4096);
+				guint8 const *data = gsf_input_read(child, size, NULL);
+				BIO_write(hash, data, size);
+				if (!gsf_output_write(outchild, size, data)) {
+					return FALSE;
+				}
+			}
+		}
+
+		gsf_output_close(outchild);
+		g_object_unref(outchild);
+	}
+
+	BIO_write(hash, classid, sizeof(classid));
+
+	return TRUE;
+}
 #endif
 
 static void tohex(const unsigned char *v, unsigned char *b, int len)
@@ -1690,38 +1736,11 @@ int main(int argc, char **argv)
 		gsf_infile_msole_get_class_id(GSF_INFILE_MSOLE(ole), classid);
 
 		outole = gsf_outfile_msole_new(sink);
-		gsf_outfile_msole_set_class_id(GSF_OUTFILE_MSOLE(outole), classid);
 
-		for (i = 0; i < gsf_infile_num_children(ole); i++) {
-			GsfInput *child = gsf_infile_child_by_index(ole, i);
-			const guint8 *name = (const guint8*)gsf_input_name(child);
-			msi_decode(name, decoded);
-			if (!g_strcmp0(decoded, "\05DigitalSignature"))
-				continue;
-
-			sorted = g_slist_insert_sorted(sorted, (gpointer)name, (GCompareFunc)msi_cmp);
+		if (!msi_handle_dir(ole, outole, hash)) {
+			DO_EXIT_0("unable to msi_handle_dir()\n");
 		}
 
-		for (; sorted; sorted = sorted->next) {
-			GsfInput *child =  gsf_infile_child_by_name(ole, (gchar*)sorted->data);
-			msi_decode(sorted->data, decoded);
-			if (child == NULL)
-				continue;
-
-			GsfOutput *outchild = gsf_outfile_new_child(outole, (gchar*)sorted->data, FALSE);
-			while (gsf_input_remaining(child) > 0) {
-				gsf_off_t size = MIN(gsf_input_remaining(child), 4096);
-				guint8 const *data = gsf_input_read(child, size, NULL);
-				BIO_write(hash, data, size);
-				if (!gsf_output_write(outchild, size, data))
-					DO_EXIT_1("Error writing %s", outfile);
-			}
-			g_object_unref(child);
-			gsf_output_close(outchild);
-			g_object_unref(outchild);
-		}
-
-		BIO_write(hash, classid, sizeof(classid));
 		g_slist_free(sorted);
 #else
 		DO_EXIT_1("libgsf is not available, msi support is disabled: %s\n", infile);
