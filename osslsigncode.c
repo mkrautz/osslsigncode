@@ -88,6 +88,8 @@ static const char *rcsid = "$Id: osslsigncode.c,v 1.5.1 2013/03/13 13:13:13 mfiv
 #include <openssl/engine.h>
 #endif
 
+#include "hexdump.c"
+
 #ifdef ENABLE_CURL
 #include <curl/curl.h>
 
@@ -1029,18 +1031,113 @@ static void msi_decode(const guint8 *in, gchar *out)
  */
 static gint msi_cmp(gpointer a, gpointer b)
 {
-	gchar *pa = (gchar*)g_utf8_to_utf16(a, -1, NULL, NULL, NULL);
-	gchar *pb = (gchar*)g_utf8_to_utf16(b, -1, NULL, NULL, NULL);
+	glong anc = 0, bnc = 0;
+	gchar *pa = (gchar*)g_utf8_to_utf16(a, -1, NULL, &anc, NULL);
+	gchar *pb = (gchar*)g_utf8_to_utf16(b, -1, NULL, &bnc, NULL);
 	gint diff;
 
-	diff = memcmp(pa, pb, MIN(strlen(pa), strlen(pb)));
+	diff = memcmp(pa, pb, MIN(2*anc, 2*bnc));
 	/* apparently the longer wins */
 	if (diff == 0)
-		return strlen(pa) > strlen(pb) ? 1 : -1;
+		return 2*anc > 2*bnc ? 1 : -1;
 	g_free(pa);
 	g_free(pb);
 
 	return diff;
+}
+
+static gboolean msi_prehash_utf16_name(gchar *name, BIO *hash)
+{
+	glong chars_written = 0;
+
+	gchar *u16name = (gchar*)g_utf8_to_utf16(name, -1, NULL, &chars_written, NULL);
+	if (u16name == NULL) {
+		return FALSE;
+	}
+
+	BIO_write(hash, u16name, 2*chars_written);
+	hexdump(u16name, 2*chars_written);
+
+	g_free(u16name);
+
+	return TRUE;
+}
+
+static gboolean msi_prehash(GsfInfile *infile, gchar *dirname, BIO *hash)
+{
+	guint8 classid[16];
+	gchar decoded[0x40];
+	GSList *sorted = NULL;
+	gint i;
+
+	guint8 zeroes[16];
+	memset(&zeroes, 0, sizeof(zeroes));
+
+	gsf_infile_msole_get_class_id(GSF_INFILE_MSOLE(infile), classid);
+
+	if (dirname != NULL) {
+		if (!msi_prehash_utf16_name(dirname, hash)) {
+			return FALSE;
+		}
+	}
+
+	BIO_write(hash, classid, sizeof(classid));
+	hexdump(classid, sizeof(classid));
+
+	BIO_write(hash, zeroes, 4);
+	hexdump(zeroes, 4);
+
+	if (dirname != NULL) {
+		BIO_write(hash, zeroes, 8);
+		hexdump(zeroes, 8);
+
+		BIO_write(hash, zeroes, 8);
+		hexdump(zeroes, 8);
+	}
+
+	for (i = 0; i < gsf_infile_num_children(infile); i++) {
+		GsfInput *child = gsf_infile_child_by_index(infile, i);
+		const guint8 *name = (const guint8*)gsf_input_name(child);
+		msi_decode(name, decoded);
+
+		if (!g_strcmp0(decoded, "\05DigitalSignature"))
+			continue;
+		if (!g_strcmp0(decoded, "\05MsiDigitalSignatureEx"))
+			continue;
+ 
+		sorted = g_slist_insert_sorted(sorted, (gpointer)name, (GCompareFunc)msi_cmp);
+	}
+
+	for (; sorted; sorted = sorted->next) {
+		gchar *name = (gchar*)sorted->data;
+		GsfInput *child =  gsf_infile_child_by_name(infile, name);
+		if (child == NULL)
+			continue;
+
+		gboolean is_dir = GSF_IS_INFILE(child) && gsf_infile_num_children(GSF_INFILE(child)) > 0;
+		if (is_dir) {
+			if (!msi_prehash(GSF_INFILE(child), name, hash)) {
+				return FALSE;
+			}
+		} else {
+			if (!msi_prehash_utf16_name(name, hash))
+				return FALSE;
+
+			// Size
+			gsf_off_t size = gsf_input_remaining(child);
+			guint32 sizebuf = GUINT32_TO_LE((guint32)size);
+			BIO_write(hash, (void *)&sizebuf, sizeof(sizebuf));
+			hexdump((void *)&sizebuf, sizeof(sizebuf));
+
+			// XXX: ?
+			BIO_write(hash, zeroes, 4);
+			hexdump(zeroes, 4);
+
+			// XXX: ctime and mtime?
+			BIO_write(hash, zeroes, 16);
+			hexdump(zeroes, 16);
+		}
+	}
 }
 
 static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
@@ -1742,6 +1839,21 @@ int main(int argc, char **argv)
 
 		ole = gsf_infile_msole_new(src, NULL);
 		outole = gsf_outfile_msole_new(sink);
+
+		// Perform the pre-hash.
+		if (FALSE) {
+			BIO *prehash = BIO_new(BIO_f_md());
+			BIO_set_md(prehash, md);
+			BIO_push(prehash, BIO_new(BIO_s_null()));
+
+			msi_prehash(ole, NULL, prehash);
+
+			unsigned char mdbuf[EVP_MAX_MD_SIZE];
+			int mdlen = BIO_gets(prehash, (char*)mdbuf, EVP_MAX_MD_SIZE);
+
+			BIO_write(hash, mdbuf, mdlen);
+		}
+
 		if (!msi_handle_dir(ole, outole, hash)) {
 			DO_EXIT_0("unable to msi_handle_dir()\n");
 		}
