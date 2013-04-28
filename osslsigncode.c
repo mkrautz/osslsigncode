@@ -1029,14 +1029,15 @@ static void msi_decode(const guint8 *in, gchar *out)
  */
 static gint msi_cmp(gpointer a, gpointer b)
 {
-	gchar *pa = (gchar*)g_utf8_to_utf16(a, -1, NULL, NULL, NULL);
-	gchar *pb = (gchar*)g_utf8_to_utf16(b, -1, NULL, NULL, NULL);
+	glong anc = 0, bnc = 0;
+	gchar *pa = (gchar*)g_utf8_to_utf16(a, -1, NULL, &anc, NULL);
+	gchar *pb = (gchar*)g_utf8_to_utf16(b, -1, NULL, &bnc, NULL);
 	gint diff;
 
-	diff = memcmp(pa, pb, MIN(strlen(pa), strlen(pb)));
+	diff = memcmp(pa, pb, MIN(2*anc, 2*bnc));
 	/* apparently the longer wins */
 	if (diff == 0)
-		return strlen(pa) > strlen(pb) ? 1 : -1;
+		return 2*anc > 2*bnc ? 1 : -1;
 	g_free(pa);
 	g_free(pb);
 
