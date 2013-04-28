@@ -1122,7 +1122,7 @@ static gboolean msi_prehash(GsfInfile *infile, gchar *dirname, BIO *hash)
 			 */
 			gsf_off_t size = gsf_input_remaining(child);
 			guint32 sizebuf = GUINT32_TO_LE((guint32)size);
-			BIO_write(hash, (void *)&sizebuf, sizeof(sizebuf));
+			BIO_write(hash, &sizebuf, sizeof(sizebuf));
 
 			/*
 			 * Reserved - must be 0. Corresponds to
