@@ -1067,24 +1067,27 @@ static gboolean msi_prehash(GsfInfile *infile, gchar *dirname, BIO *hash)
 	GSList *sorted = NULL;
 	gint i;
 
-	guint8 zeroes[16];
+	guint8 zeroes[8];
 	memset(&zeroes, 0, sizeof(zeroes));
 
 	gsf_infile_msole_get_class_id(GSF_INFILE_MSOLE(infile), classid);
 
 	if (dirname != NULL) {
-		if (!msi_prehash_utf16_name(dirname, hash)) {
+		if (!msi_prehash_utf16_name(dirname, hash))
 			return FALSE;
-		}
 	}
 
 	BIO_write(hash, classid, sizeof(classid));
-
 	BIO_write(hash, zeroes, 4);
 
 	if (dirname != NULL) {
-		BIO_write(hash, zeroes, 8);
-		BIO_write(hash, zeroes, 8);
+		/*
+		 * Creation time and modification file for the root directory.
+		 * These are always zero. The ctime and mtime of the actual
+		 * file itself takes precedence.
+		 */ 
+		BIO_write(hash, zeroes, 8); // ctime as Windows FILETIME.
+		BIO_write(hash, zeroes, 8); // mtime as Windows FILETIME.
 	}
 
 	for (i = 0; i < gsf_infile_num_children(infile); i++) {
@@ -1108,21 +1111,33 @@ static gboolean msi_prehash(GsfInfile *infile, gchar *dirname, BIO *hash)
 
 		gboolean is_dir = GSF_IS_INFILE(child) && gsf_infile_num_children(GSF_INFILE(child)) > 0;
 		if (is_dir) {
-			if (!msi_prehash(GSF_INFILE(child), name, hash)) {
+			if (!msi_prehash(GSF_INFILE(child), name, hash))
 				return FALSE;
-			}
 		} else {
 			if (!msi_prehash_utf16_name(name, hash))
 				return FALSE;
 
-			// Size
+			/*
+			 * File size.
+			 */
 			gsf_off_t size = gsf_input_remaining(child);
 			guint32 sizebuf = GUINT32_TO_LE((guint32)size);
 			BIO_write(hash, (void *)&sizebuf, sizeof(sizebuf));
-			// XXX: ?
+
+			/*
+			 * Reserved - must be 0. Corresponds to
+			 * offset 0x7c..0x7f in the CDFv2 file.
+			 */
 			BIO_write(hash, zeroes, 4);
-			// XXX: ctime and mtime?
-			BIO_write(hash, zeroes, 16);
+
+			/*
+			 * Creation time and modification times
+			 * as Windows FILETIMEs. We keep them
+			 * zeroed, because libgsf doesn't seem
+			 * to support outputting them.
+			 */
+			BIO_write(hash, zeroes, 8); // ctime as a Windows FILETIME
+			BIO_write(hash, zeroes, 8); // mtime as a Windows FILETIME
 		}
 	}
 }
