@@ -88,8 +88,6 @@ static const char *rcsid = "$Id: osslsigncode.c,v 1.5.1 2013/03/13 13:13:13 mfiv
 #include <openssl/engine.h>
 #endif
 
-#include "hexdump.c"
-
 #ifdef ENABLE_CURL
 #include <curl/curl.h>
 
@@ -1056,7 +1054,6 @@ static gboolean msi_prehash_utf16_name(gchar *name, BIO *hash)
 	}
 
 	BIO_write(hash, u16name, 2*chars_written);
-	hexdump(u16name, 2*chars_written);
 
 	g_free(u16name);
 
@@ -1082,17 +1079,12 @@ static gboolean msi_prehash(GsfInfile *infile, gchar *dirname, BIO *hash)
 	}
 
 	BIO_write(hash, classid, sizeof(classid));
-	hexdump(classid, sizeof(classid));
 
 	BIO_write(hash, zeroes, 4);
-	hexdump(zeroes, 4);
 
 	if (dirname != NULL) {
 		BIO_write(hash, zeroes, 8);
-		hexdump(zeroes, 8);
-
 		BIO_write(hash, zeroes, 8);
-		hexdump(zeroes, 8);
 	}
 
 	for (i = 0; i < gsf_infile_num_children(infile); i++) {
@@ -1127,15 +1119,10 @@ static gboolean msi_prehash(GsfInfile *infile, gchar *dirname, BIO *hash)
 			gsf_off_t size = gsf_input_remaining(child);
 			guint32 sizebuf = GUINT32_TO_LE((guint32)size);
 			BIO_write(hash, (void *)&sizebuf, sizeof(sizebuf));
-			hexdump((void *)&sizebuf, sizeof(sizebuf));
-
 			// XXX: ?
 			BIO_write(hash, zeroes, 4);
-			hexdump(zeroes, 4);
-
 			// XXX: ctime and mtime?
 			BIO_write(hash, zeroes, 16);
-			hexdump(zeroes, 16);
 		}
 	}
 }
@@ -1537,8 +1524,8 @@ int main(int argc, char **argv)
 	char *turl[MAX_TS_SERVERS], *proxy = NULL, *tsurl[MAX_TS_SERVERS];
 	int nturl = 0, ntsurl = 0;
 #endif
-	u_char *p;
-	int ret = 0, i, len = 0, jp = -1, fd = -1, pe32plus = 0, comm = 0, pagehash = 0;
+	u_char *p = NULL, *p_msiex = NULL;
+	int ret = 0, i, len = 0, len_msiex = 0, jp = -1, fd = -1, pe32plus = 0, comm = 0, pagehash = 0;
 	unsigned int tmp, peheader = 0, padlen = 0;
 	off_t fileend;
 	file_type_t type;
@@ -1840,19 +1827,20 @@ int main(int argc, char **argv)
 		ole = gsf_infile_msole_new(src, NULL);
 		outole = gsf_outfile_msole_new(sink);
 
-		// Perform the pre-hash.
-		if (FALSE) {
+#ifndef NO_MSI_DIGITALSIGNATUREEX
+		{
 			BIO *prehash = BIO_new(BIO_f_md());
 			BIO_set_md(prehash, md);
 			BIO_push(prehash, BIO_new(BIO_s_null()));
 
 			msi_prehash(ole, NULL, prehash);
 
-			unsigned char mdbuf[EVP_MAX_MD_SIZE];
-			int mdlen = BIO_gets(prehash, (char*)mdbuf, EVP_MAX_MD_SIZE);
+			p_msiex = malloc(EVP_MAX_MD_SIZE);
+			len_msiex = BIO_gets(prehash, (char*)p_msiex, EVP_MAX_MD_SIZE);
 
-			BIO_write(hash, mdbuf, mdlen);
+			BIO_write(hash, p_msiex, len_msiex);
 		}
+#endif
 
 		if (!msi_handle_dir(ole, outole, hash)) {
 			DO_EXIT_0("unable to msi_handle_dir()\n");
@@ -2164,8 +2152,17 @@ int main(int argc, char **argv)
 	} else if (type == FILE_TYPE_MSI) {
 		GsfOutput *child = gsf_outfile_new_child(outole, "\05DigitalSignature", FALSE);
 		if (!gsf_output_write(child, len, p))
-			DO_EXIT_1("Failed to write MSI signature to %s", infile);
+			DO_EXIT_1("Failed to write MSI 'DigitalSignature' signature to %s", infile);
 		gsf_output_close(child);
+
+		if (p_msiex != NULL) {
+			child = gsf_outfile_new_child(outole, "\05MsiDigitalSignatureEx", FALSE);
+			if (!gsf_output_write(child, len_msiex, p_msiex)) {
+				DO_EXIT_1("Failed to write MSI 'MsiDigitalSigantureEx' signature to %s", infile);
+			}
+			gsf_output_close(child);
+		}
+
 		gsf_output_close(GSF_OUTPUT(outole));
 		g_object_unref(sink);
 #endif
