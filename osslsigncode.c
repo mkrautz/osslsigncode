@@ -1194,7 +1194,8 @@ static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
 	GSList *sorted = NULL;
 
 	gsf_infile_msole_get_class_id(GSF_INFILE_MSOLE(infile), classid);
-	gsf_outfile_msole_set_class_id(GSF_OUTFILE_MSOLE(outole), classid);
+	if (outole != NULL)
+		gsf_outfile_msole_set_class_id(GSF_OUTFILE_MSOLE(outole), classid);
 
 	sorted = msi_sorted_infile_children(infile);
 
@@ -1205,7 +1206,9 @@ static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
 			continue;
 
 		gboolean is_dir = GSF_IS_INFILE(child) && gsf_infile_num_children(GSF_INFILE(child)) > 0;
-		GsfOutput *outchild = gsf_outfile_new_child(outole, name, is_dir);
+		GsfOutput *outchild = NULL;
+		if (outole != NULL)
+			outchild = gsf_outfile_new_child(outole, name, is_dir);
 		if (is_dir) {
 			if (!msi_handle_dir(GSF_INFILE(child), GSF_OUTFILE(outchild), hash)) {
 				return FALSE;
@@ -1215,14 +1218,16 @@ static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
 				gsf_off_t size = MIN(gsf_input_remaining(child), 4096);
 				guint8 const *data = gsf_input_read(child, size, NULL);
 				BIO_write(hash, data, size);
-				if (!gsf_output_write(outchild, size, data)) {
+				if (outchild != NULL && !gsf_output_write(outchild, size, data)) {
 					return FALSE;
 				}
 			}
 		}
 
-		gsf_output_close(outchild);
-		g_object_unref(outchild);
+		if (outchild != NULL) {
+			gsf_output_close(outchild);
+			g_object_unref(outchild);
+		}
 	}
 
 	BIO_write(hash, classid, sizeof(classid));
@@ -1840,8 +1845,8 @@ int main(int argc, char **argv)
 		DO_EXIT_1("Unrecognized file type: %s\n", infile);
 	}
 
-	if (cmd != CMD_SIGN && type != FILE_TYPE_PE)
-		DO_EXIT_1("Command is not supported for non-PE files: %s\n", infile);
+	if (cmd != CMD_SIGN && !(type == FILE_TYPE_PE || type == FILE_TYPE_MSI))
+		DO_EXIT_1("Command is not supported for non-PE/non-MSI files: %s\n", infile);
 
 	hash = BIO_new(BIO_f_md());
 	BIO_set_md(hash, md);
@@ -1870,12 +1875,14 @@ int main(int argc, char **argv)
 		if (!src)
 			DO_EXIT_1("Error opening file %s", infile);
 
-		sink = gsf_output_stdio_new(outfile, NULL);
-		if (!sink)
-			DO_EXIT_1("Error opening output file %s", outfile);
+		if (cmd == CMD_SIGN || cmd == CMD_REMOVE) {
+			sink = gsf_output_stdio_new(outfile, NULL);
+			if (!sink)
+				DO_EXIT_1("Error opening output file %s", outfile);
 
-		ole = gsf_infile_msole_new(src, NULL);
-		outole = gsf_outfile_msole_new(sink);
+			ole = gsf_infile_msole_new(src, NULL);
+			outole = gsf_outfile_msole_new(sink);
+		}
 
 #ifndef NO_MSI_DIGITALSIGNATUREEX
 		/*
@@ -1935,6 +1942,11 @@ int main(int argc, char **argv)
 
 		if (!msi_handle_dir(ole, outole, hash)) {
 			DO_EXIT_0("unable to msi_handle_dir()\n");
+		}
+
+		if (cmd == CMD_REMOVE) {
+			gsf_output_close(GSF_OUTPUT(outole));
+			g_object_unref(sink);
 		}
 #else
 		DO_EXIT_1("libgsf is not available, msi support is disabled: %s\n", infile);
@@ -2241,21 +2253,24 @@ int main(int argc, char **argv)
 		}
 #ifdef WITH_GSF
 	} else if (type == FILE_TYPE_MSI) {
-		GsfOutput *child = gsf_outfile_new_child(outole, "\05DigitalSignature", FALSE);
-		if (!gsf_output_write(child, len, p))
-			DO_EXIT_1("Failed to write MSI 'DigitalSignature' signature to %s", infile);
-		gsf_output_close(child);
-
-		if (p_msiex != NULL) {
-			child = gsf_outfile_new_child(outole, "\05MsiDigitalSignatureEx", FALSE);
-			if (!gsf_output_write(child, len_msiex, p_msiex)) {
-				DO_EXIT_1("Failed to write MSI 'MsiDigitalSignatureEx' signature to %s", infile);
-			}
+		/* Only output signatures if we're signing. */
+		if (cmd == CMD_SIGN) {
+			GsfOutput *child = gsf_outfile_new_child(outole, "\05DigitalSignature", FALSE);
+			if (!gsf_output_write(child, len, p))
+				DO_EXIT_1("Failed to write MSI 'DigitalSignature' signature to %s", infile);
 			gsf_output_close(child);
-		}
 
-		gsf_output_close(GSF_OUTPUT(outole));
-		g_object_unref(sink);
+			if (p_msiex != NULL) {
+				child = gsf_outfile_new_child(outole, "\05MsiDigitalSignatureEx", FALSE);
+				if (!gsf_output_write(child, len_msiex, p_msiex)) {
+					DO_EXIT_1("Failed to write MSI 'MsiDigitalSignatureEx' signature to %s", infile);
+				}
+				gsf_output_close(child);
+			}
+
+			gsf_output_close(GSF_OUTPUT(outole));
+			g_object_unref(sink);
+		}
 #endif
 	}
 
