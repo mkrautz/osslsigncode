@@ -1509,7 +1509,7 @@ static int msi_verify_file(GsfInfile *infile, char *leafhash) {
 		OPENSSL_free(subject);
 		OPENSSL_free(issuer);
 
-		if (leafok == 0) {
+		if (leafhash != NULL && leafok == 0) {
 			leafok = msi_verify_leaf_hash(cert, leafhash) == 0;
 		}
 	}
