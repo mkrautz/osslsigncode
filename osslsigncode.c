@@ -1529,7 +1529,8 @@ static int msi_verify_file(GsfInfile *infile, char *leafhash) {
 
 	if (leafhash != NULL) {
 		printf("Leaf hash match: %s\n\n", leafok ? "ok" : "failed");
-		ret = (leafok == 1);
+		if (!leafok)
+			ret = 1;
 	}
 
 out:
