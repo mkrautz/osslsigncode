@@ -1341,6 +1341,19 @@ static int msi_verify_file(GsfInfile *infile) {
 	BIO_push(hash, BIO_new(BIO_s_null()));
 
 	if (exsig) {
+		/*
+		 * Until libgsf can read more MSI metadata, we can't
+		 * really verify them by plowing through the file.
+		 * Verifying files signed by osslsigncode itself works,
+		 * though!
+		 *
+		 * For now, the compromise is to use the hash given
+		 * by the file, which is equivalent to verifying a
+		 * non-MsiDigitalSignatureEx signature from a security
+		 * pespective, because we'll only be calculating the
+		 * file content hashes ourselves.
+		 */
+#ifdef GSF_CAN_READ_MSI_METADATA
 		BIO *prehash = BIO_new(BIO_f_md());
 		BIO_set_md(prehash, md);
 		BIO_push(prehash, BIO_new(BIO_s_null()));
@@ -1352,6 +1365,9 @@ static int msi_verify_file(GsfInfile *infile) {
 
 		BIO_gets(prehash, (char*)cexmdbuf, EVP_MAX_MD_SIZE);
 		BIO_write(hash, (char*)cexmdbuf, EVP_MD_size(md));
+#else
+		BIO_write(hash, (char *)exdata, EVP_MD_size(md));
+#endif
 	}
 
 	if (!msi_handle_dir(infile, NULL, hash)) {
@@ -1371,6 +1387,7 @@ static int msi_verify_file(GsfInfile *infile) {
 		printf("    MISMATCH!!! FILE HAS %s\n", hexbuf);
 	}
 
+#ifdef GSF_CAN_READ_MSI_METADATA
 	if (exsig && exdata) {
 		tohex(cexmdbuf, hexbuf, EVP_MD_size(md));
 		int exok = !memcmp(exdata, cexmdbuf, MIN(EVP_MD_size(md), exlen));
@@ -1383,6 +1400,7 @@ static int msi_verify_file(GsfInfile *infile) {
 			printf("    MISMATCH!!! FILE HAS %s\n", hexbuf);
 		}
 	}
+#endif
 
 	printf("\n");
 
