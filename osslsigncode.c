@@ -736,7 +736,7 @@ static void usage(const char *argv0)
 			"\textract-signature [ -in ] <infile> [ -out ] <outfile>\n\n"
 			"\tremove-signature [ -in ] <infile> [ -out ] <outfile>\n\n"
 			"\tverify [ -in ] <infile>\n"
-			"\t\t[ -require-leaf-hash {md5,sha1,sha2(56),sha384,sha512}:XXXXXXXXXXXX... ] (only for MSI files)\n"
+			"\t\t[ -require-leaf-hash {md5,sha1,sha2(56),sha384,sha512}:XXXXXXXXXXXX... ]\n"
 			"\n"
 			"",
 			argv0);
@@ -987,6 +987,84 @@ static void recalc_pe_checksum(BIO *bio, unsigned int peheader)
 	(void)BIO_seek(bio, peheader + 88);
 	PUT_UINT32_LE(checkSum, buf);
 	BIO_write(bio, buf, 4);
+}
+
+static unsigned char nib2val(unsigned char c) {
+	if (c >= '0' && c <= '9') {
+		return c - '0';
+	} else if (c >= 'a' && c <= 'f') {
+		return c - 'a' + 10;
+	} else if (c >= 'A' && c <= 'F') {
+		return c - 'A' + 10;
+	}
+}
+
+static int verify_leaf_hash(X509 *leaf, char *leafhash) {
+	char *orig = leafhash;
+	char *mdid = orig;
+	char *hash = NULL;
+	while (leafhash != NULL && *leafhash != '\0') {
+		if (*leafhash == ':') {
+			*leafhash = '\0';
+			++leafhash;
+			hash = leafhash;
+			break;
+		}
+		++leafhash;
+	}
+	if (hash == NULL) {
+		printf("Unable to parse -require-leaf-hash parameter: %s\n\n", orig);
+		return 1;
+	}
+
+	const EVP_MD *md = EVP_get_digestbyname(mdid);
+	if (md == NULL) {
+		printf("Unable to lookup digest by name '%s'\n", mdid);
+		return 1;
+	}
+
+	unsigned long sz = EVP_MD_size(md);
+	unsigned long actual = strlen(hash);
+	if (actual%2 != 0) {
+		printf("Hash length mismatch: length is uneven.\n");
+		return 1;
+	}
+	actual /= 2;
+	if (actual != sz) {
+		printf("Hash length mismatch: '%s' digest must be %lu bytes long (got %lu bytes)\n", mdid, sz, actual);
+		return 1;
+	}
+
+	unsigned char mdbuf[EVP_MAX_MD_SIZE];
+	unsigned char cmdbuf[EVP_MAX_MD_SIZE];
+	int i = 0, j = 0;
+	while (i < sz*2) {
+		unsigned char x;
+		x = nib2val(hash[i+1]);
+		x |= nib2val(hash[i]) << 4;
+		mdbuf[j] = x;
+		i += 2;
+		j += 1;
+	}
+
+	unsigned long certlen = i2d_X509(leaf, NULL);
+	unsigned char *certbuf = malloc(certlen);
+	unsigned char *tmp = certbuf;
+	i2d_X509(leaf, &tmp);
+
+	EVP_MD_CTX *ctx = EVP_MD_CTX_create();
+	EVP_DigestInit_ex(ctx, md, NULL);
+	EVP_DigestUpdate(ctx, certbuf, certlen);
+	EVP_DigestFinal_ex(ctx, cmdbuf, NULL);
+	EVP_MD_CTX_destroy(ctx);
+
+	free(certbuf);
+
+	if (memcmp(mdbuf, cmdbuf, EVP_MD_size(md))) {
+		return 1;
+	}
+
+	return 0;
 }
 
 #ifdef WITH_GSF
@@ -1252,84 +1330,6 @@ static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
 	return TRUE;
 }
 
-static unsigned char nib2val(unsigned char c) {
-	if (c >= '0' && c <= '9') {
-		return c - '0';
-	} else if (c >= 'a' && c <= 'f') {
-		return c - 'a' + 10;
-	} else if (c >= 'A' && c <= 'F') {
-		return c - 'A' + 10;
-	}
-}
-
-static int msi_verify_leaf_hash(X509 *leaf, char *leafhash) {
-	char *orig = leafhash;
-	char *mdid = orig;
-	char *hash = NULL;
-	while (leafhash != NULL && *leafhash != '\0') {
-		if (*leafhash == ':') {
-			*leafhash = '\0';
-			++leafhash;
-			hash = leafhash;
-			break;
-		}
-		++leafhash;
-	}
-	if (hash == NULL) {
-		printf("Unable to parse -require-leaf-hash parameter: %s\n\n", orig);
-		return 1;
-	}
-
-	const EVP_MD *md = EVP_get_digestbyname(mdid);
-	if (md == NULL) {
-		printf("Unable to lookup digest by name '%s'\n", mdid);
-		return 1;
-	}
-
-	unsigned long sz = EVP_MD_size(md);
-	unsigned long actual = strlen(hash);
-	if (actual%2 != 0) {
-		printf("Hash length mismatch: length is uneven.\n");
-		return 1;
-	}
-	actual /= 2;
-	if (actual != sz) {
-		printf("Hash length mismatch: '%s' digest must be %lu bytes long (got %lu bytes)\n", mdid, sz, actual);
-		return 1;
-	}
-
-	unsigned char mdbuf[EVP_MAX_MD_SIZE];
-	unsigned char cmdbuf[EVP_MAX_MD_SIZE];
-	int i, j;
-	while (i < sz*2) {
-		unsigned char x;
-		x = nib2val(hash[i+1]);
-		x |= nib2val(hash[i]) << 4;
-		mdbuf[j] = x;
-		i += 2;
-		j += 1;
-	}
-
-	unsigned long certlen = i2d_X509(leaf, NULL);
-	unsigned char *certbuf = malloc(certlen);
-	unsigned char *tmp = certbuf;
-	i2d_X509(leaf, &tmp);
-
-	EVP_MD_CTX *ctx = EVP_MD_CTX_create();
-	EVP_DigestInit_ex(ctx, md, NULL);
-	EVP_DigestUpdate(ctx, certbuf, certlen);
-	EVP_DigestFinal_ex(ctx, cmdbuf, NULL);
-	EVP_MD_CTX_destroy(ctx);
-
-	free(certbuf);
-
-	if (memcmp(mdbuf, cmdbuf, EVP_MD_size(md))) {
-		return 1;
-	}
-
-	return 0;
-}
-
 /*
  * msi_verify_file checks whether or not the signature of infile is valid.
  */
@@ -1510,7 +1510,7 @@ static int msi_verify_file(GsfInfile *infile, char *leafhash) {
 		OPENSSL_free(issuer);
 
 		if (leafhash != NULL && leafok == 0) {
-			leafok = msi_verify_leaf_hash(cert, leafhash) == 0;
+			leafok = verify_leaf_hash(cert, leafhash) == 0;
 		}
 	}
 	sk_X509_free(signers);
@@ -1760,7 +1760,7 @@ static unsigned char *calc_page_hash(char *indata, unsigned int peheader, int pe
 }
 
 static int verify_pe_file(char *indata, unsigned int peheader, int pe32plus,
-						  unsigned int sigpos, unsigned int siglen)
+						  unsigned int sigpos, unsigned int siglen, char *leafhash)
 {
 	int ret = 0;
 	unsigned int pe_checksum = GET_UINT32_LE(indata + peheader + 88);
@@ -1869,6 +1869,7 @@ static int verify_pe_file(char *indata, unsigned int peheader, int pe32plus,
 	}
 
 	int i;
+	int leafok = 0;
 	STACK_OF(X509) *signers = PKCS7_get0_signers(p7, NULL, 0);
 	printf("Number of signers: %d\n", sk_X509_num(signers));
 	for (i=0; i<sk_X509_num(signers); i++) {
@@ -1878,6 +1879,10 @@ static int verify_pe_file(char *indata, unsigned int peheader, int pe32plus,
 		printf("\tSigner #%d:\n\t\tSubject: %s\n\t\tIssuer : %s\n", i, subject, issuer);
 		OPENSSL_free(subject);
 		OPENSSL_free(issuer);
+
+		if (leafhash != NULL && leafok == 0) {
+			leafok = verify_leaf_hash(cert, leafhash) == 0;
+		}
 	}
 	sk_X509_free(signers);
 
@@ -1895,6 +1900,12 @@ static int verify_pe_file(char *indata, unsigned int peheader, int pe32plus,
 	PKCS7_free(p7);
 
 	printf("\n");
+
+	if (leafhash != NULL) {
+		printf("Leaf hash match: %s\n\n", leafok ? "ok" : "failed");
+		if (!leafok)
+			ret = 1;
+	}
 
 	return ret;
 }
@@ -2421,7 +2432,7 @@ int main(int argc, char **argv)
 		}
 
 		if (cmd == CMD_VERIFY) {
-			ret = verify_pe_file(indata, peheader, pe32plus, sigpos ? sigpos : fileend, siglen);
+			ret = verify_pe_file(indata, peheader, pe32plus, sigpos ? sigpos : fileend, siglen, leafhash);
 			goto skip_signing;
 		}
 
