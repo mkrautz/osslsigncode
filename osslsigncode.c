@@ -1428,6 +1428,10 @@ static gboolean msi_handle_dir(GsfInfile *infile, GsfOutfile *outole, BIO *hash)
 	return TRUE;
 }
 
+/*
+ * msi_verify_pkcs7 is a helper function for msi_verify_file.
+ * It exists to make it easier to implement verification of nested signatures.
+ */
 static int msi_verify_pkcs7(PKCS7 *p7, GsfInfile *infile, unsigned char *exdata, unsigned int exlen, char *leafhash, int allownest) {
 	int i = 0;
 	int ret = 0;
@@ -1454,10 +1458,6 @@ static int msi_verify_pkcs7(PKCS7 *p7, GsfInfile *infile, unsigned char *exdata,
 			SpcIndirectDataContent_free(idc);
 		}
 		ASN1_OBJECT_free(indir_objid);
-		if (p7 && mdtype == -1) {
-			PKCS7_free(p7);
-			p7 = NULL;
-		}
 	}
 
 	if (mdtype == -1) {
@@ -1669,6 +1669,9 @@ static int msi_verify_file(GsfInfile *infile, char *leafhash) {
 out:
 	free(indata);
 	free(exdata);
+
+	if (p7)
+		PKCS7_free(p7);
 
 	return ret;
 }
