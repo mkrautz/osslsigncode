@@ -1612,6 +1612,8 @@ static int msi_verify_pkcs7(PKCS7 *p7, GsfInfile *infile, unsigned char *exdata,
 out:
 	if (store)
 		X509_STORE_free(store);
+
+	return ret;
 }
 
 /*
@@ -1665,8 +1667,6 @@ static int msi_verify_file(GsfInfile *infile, char *leafhash) {
 	ret = msi_verify_pkcs7(p7, infile, exdata, exlen, leafhash, 1);
 
 out:
-
-
 	free(indata);
 	free(exdata);
 
